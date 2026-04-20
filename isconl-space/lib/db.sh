@@ -30,13 +30,13 @@ _DIA_DB="$_ISCONL_DATA_DIR/dia_encrypted.db"
 _EVENTS_DB="$_ISCONL_DATA_DIR/isconl_events.db"
 
 # Flat-file data directory (set by sconlx after sourcing conf)
-_FLAT_DIR="${_SCONLSPACE_DATA_DIR:-}"
+_FLAT_DIR="${_FLAT_DIR:-${_ISCONLSPACE_DATA_DIR:-${_SCONLSPACE_DATA_DIR:-}}}"
 
 # Data mode (flat or sqlite) — set by _db_init
 _DATA_MODE="flat"
 
 # Equicycle Python helper path
-_EQUICYCLE_PY="${_SCONLSPACE_LIB_DIR:-}/equicycle.py"
+_EQUICYCLE_PY="${_EQUICYCLE_PY:-${_ISCONLSPACE_LIB_DIR:-${_SCONLSPACE_LIB_DIR:-}}/equicycle.py}"
 
 # ─────────────────────────────────────────────────────────────────────────────
 # INIT — called once at sconlx startup

@@ -1,16 +1,17 @@
-# sconl-space/lib/calendar.sh
+# isconl-space/lib/calendar.sh
 # Calendar command handlers for sconlx.
 # Covers: today's context (holidays, history, birthdays, journal on this day),
 # upcoming events, birthday management, custom events, monthly view.
-# Data stored in: sconl-space/data/calendar.json (human-editable)
-# Python backend: sconl-space/lib/calendar_data.py
+# Data stored in: isconl-space/data/calendar.json (human-editable)
+# Python backend: isconl-space/lib/calendar_data.py
 #
 # ─────────────────────────────────────────────────────────────────────────────
 # CHANGELOG
 # ─────────────────────────────────────────────────────────────────────────────
+#   v1.1.0 — Fixed: path fallback for calendar_data.py after sconl→isconl
+#             rename. Fixed: _cal_py no longer silently swallows errors.
+#             UX: added blank-line breathing room throughout all views.
 #   v1.0.0 — Initial. today/upcoming/birthdays/events/month/add/remove.
-#             Integrates with DIA profiles for birthday sync.
-#             Day themes and focus blocks displayed in today view.
 # ─────────────────────────────────────────────────────────────────────────────
 
 [[ -n "${_CALENDAR_LOADED:-}" ]] && return 0
@@ -21,11 +22,26 @@ _CALENDAR_LOADED=1
 # ─────────────────────────────────────────────────────────────────────────────
 
 _CAL_DATA_FILE="${_FLAT_DIR}/calendar.json"
-_CAL_PY="${_ISCONLSPACE_LIB_DIR}/calendar_data.py"
-_CAL_REGIONS="KE,INT"           # Holiday regions to show
+_CAL_REGIONS="KE,INT"
 
-# These path vars are set by db.sh after _db_init — can't reference at source time.
-# They're accessed via functions, so lazy evaluation is fine.
+# ── Path resolution for calendar_data.py ─────────────────────────────────────
+# v2.2.0 renamed the folder from sconl-space/ → isconl-space/.
+# If the Python file was never moved, fall back to the old location so the
+# calendar works immediately without a manual file move.
+_CAL_PY="${_ISCONLSPACE_LIB_DIR}/calendar_data.py"
+if [[ ! -f "$_CAL_PY" ]]; then
+  _CAL_PY_LEGACY="${_XSPACE_ROOT}/sconl-space/lib/calendar_data.py"
+  if [[ -f "$_CAL_PY_LEGACY" ]]; then
+    _CAL_PY="$_CAL_PY_LEGACY"
+    printf '  !  calendar_data.py found at legacy path.\n' >&2
+    printf '     Move it: mv "%s" "%s"\n' \
+      "$_CAL_PY_LEGACY" "${_ISCONLSPACE_LIB_DIR}/calendar_data.py" >&2
+  else
+    printf '  x  calendar_data.py not found.\n' >&2
+    printf '     Expected: %s\n' "${_ISCONLSPACE_LIB_DIR}/calendar_data.py" >&2
+  fi
+fi
+
 _cal_journal_dir() { printf '%s' "${_FLAT_JOURNAL_DIR:-${_FLAT_DIR}/journal}"; }
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -46,7 +62,7 @@ _cal_route() {
     sync-dia)       _cal_sync_from_dia ;;
     *)
       _ui_err "Unknown cal command: $cmd"
-      printf '\n%s  Usage: sconlx cal [today|upcoming|month|birthday|event|add|edit|sync-dia]\n\n' \
+      printf '\n%s  Usage: isconl cal [today|upcoming|month|birthday|event|add|edit|sync-dia]\n\n' \
         "$_UI_INDENT" >&2 ;;
   esac
 }
@@ -55,22 +71,32 @@ _cal_route() {
 # PYTHON HELPER
 # ─────────────────────────────────────────────────────────────────────────────
 
-# Call calendar_data.py and return JSON. Always passes </dev/null for IFS safety.
+# Call calendar_data.py and return JSON.
+# Errors are printed to stderr so failures are visible instead of silent.
 _cal_py() {
+  if [[ ! -f "$_CAL_PY" ]]; then
+    printf '  x  calendar_data.py missing — run: isconl x status\n' >&2
+    return 1
+  fi
   python3 "$_CAL_PY" \
     --calendar-file "$_CAL_DATA_FILE" \
     --journal-dir   "$(_cal_journal_dir)" \
     --regions       "$_CAL_REGIONS" \
-    "$@" </dev/null 2>/dev/null
+    "$@" </dev/null
 }
 
-# Ensure calendar.json exists
+# Ensure calendar.json exists with default structure
 _cal_ensure_data() {
   [[ -f "$_CAL_DATA_FILE" ]] && return 0
   mkdir -p "$(dirname "$_CAL_DATA_FILE")"
   cat > "$_CAL_DATA_FILE" << 'JSON'
 {
-  "_comment": "sconl-space/data/calendar.json — personal calendar data. Edit directly or: sconlx cal edit",
+  "_comment": "isconl-space/data/calendar.json — personal calendar data. Edit directly or: isconl cal edit",
+  "_format_notes": {
+    "birthdays": "date is MM-DD. year_of_birth optional. source: manual|dia",
+    "custom_events": "date YYYY-MM-DD for one-time, MM-DD for annual recurring",
+    "categories": "birthday|anniversary|memorial|holiday|personal|work|health"
+  },
   "birthdays": [],
   "custom_events": [],
   "settings": {
@@ -88,7 +114,6 @@ JSON
 
 # ─────────────────────────────────────────────────────────────────────────────
 # TODAY VIEW
-# The richest view — everything relevant to this exact day.
 # ─────────────────────────────────────────────────────────────────────────────
 
 _cal_today() {
@@ -99,20 +124,23 @@ _cal_today() {
   local day_theme; day_theme="$(_db_day_theme)"
 
   _ui_section "CALENDAR  ·  TODAY"
+  _ui_blank
 
-  # Date context row
+  # Date context
   printf '%s  %s\n' "$_UI_INDENT" "$(_ui_bold "$CTX_GREGORIAN")" >&2
+  _ui_blank
   printf '%s  %s\n' "$_UI_INDENT" "$(_ui_dim "$CTX_EQ_SHORT  ·  $CTX_SPRINT_SHORT")" >&2
   printf '%s  %s  %s\n' "$_UI_INDENT" "$(_ui_dim "Day theme:")" "$day_theme" >&2
+  _ui_blank
 
   # Focus blocks today
-  _ui_blank
   _ui_subsection "Focus Blocks"
+  _ui_blank
   local current_block; current_block="$(_db_current_block)"
   local block_status; block_status="$(_db_block_status)"
   for block in "${_FOCUS_BLOCKS[@]}"; do
     local start="${block%%:*}"; local rest="${block#*:}"
-    local end="${rest%%:*}";   local rest2="${rest#*:}"
+    local end="${rest%%:*}";    local rest2="${rest#*:}"
     local bname="${rest2%%:*}"; local bdesc="${rest2#*:}"
     local indicator="  "
     if [[ "$bname" == "$current_block" ]]; then
@@ -126,7 +154,6 @@ _cal_today() {
         "$start" "$end" "$(_ui_dim "$bdesc")" >&2
     fi
   done
-  # Show what's happening with the current/next block
   case "$block_status" in
     IN:*)
       local rem="${block_status##*:}"
@@ -143,8 +170,20 @@ _cal_today() {
   esac
 
   # Fetch today's calendar data from Python
-  local cal_json; cal_json="$(_cal_py --action today --date "$today")"
-  [[ -z "$cal_json" ]] && { _ui_warn "Calendar data unavailable."; return 0; }
+  local cal_json
+  cal_json="$(_cal_py --action today --date "$today")" || {
+    _ui_blank
+    _ui_warn "Calendar data unavailable — check: isconl x status"
+    _ui_blank
+    return 0
+  }
+
+  [[ -z "$cal_json" ]] && {
+    _ui_blank
+    _ui_warn "Calendar returned empty data."
+    _ui_blank
+    return 0
+  }
 
   # Holidays
   local holidays; holidays="$(printf '%s' "$cal_json" | python3 -c "
@@ -155,6 +194,7 @@ for h in d.get('holidays',[]): print(h['name'] + '  (' + h['region'] + ')')
   if [[ -n "$holidays" ]]; then
     _ui_blank
     _ui_subsection "Holidays & Observances"
+    _ui_blank
     while IFS= read -r h; do
       printf '%s  %s  %s\n' "$_UI_INDENT" "$(_ui_dim "·")" "$h" >&2
     done <<< "$holidays"
@@ -171,6 +211,7 @@ for b in d.get('birthdays_today',[]):
   if [[ -n "$bdays" ]]; then
     _ui_blank
     _ui_subsection "Birthdays Today"
+    _ui_blank
     while IFS= read -r b; do
       printf '%s  %s  %s\n' "$_UI_INDENT" "$(_ui_green "*")" "$(_ui_bold "$b")" >&2
     done <<< "$bdays"
@@ -185,6 +226,7 @@ for e in d.get('events_today',[]): print('[' + e['category'] + ']  ' + e['title'
   if [[ -n "$evs" ]]; then
     _ui_blank
     _ui_subsection "Events Today"
+    _ui_blank
     while IFS= read -r ev; do
       printf '%s  %s  %s\n' "$_UI_INDENT" "$(_ui_dim "·")" "$ev" >&2
     done <<< "$evs"
@@ -199,6 +241,7 @@ for f in d.get('history',[]): print(f)
   if [[ -n "$history" ]]; then
     _ui_blank
     _ui_subsection "Today in History"
+    _ui_blank
     while IFS= read -r fact; do
       printf '%s  %s  %s\n' "$_UI_INDENT" "$(_ui_dim "·")" "$(_ui_dim "$fact")" >&2
     done <<< "$history"
@@ -217,10 +260,13 @@ for j in d.get('journal_on_this_day',[]):
   if [[ -n "$on_this_day" ]]; then
     _ui_blank
     _ui_subsection "Journal  ·  On This Day"
+    _ui_blank
     while IFS= read -r line; do
-      printf '%s  %s  %s\n' "$_UI_INDENT" "$(_ui_dim "·")" "$(_ui_italic "$(_ui_truncate "$line" 55)")" >&2
+      printf '%s  %s  %s\n' "$_UI_INDENT" "$(_ui_dim "·")" \
+        "$(_ui_italic "$(_ui_truncate "$line" 55)")" >&2
     done <<< "$on_this_day"
-    _ui_hint "sconlx journal  to write today's entry"
+    _ui_blank
+    _ui_hint "isconl journal  to write today's entry"
   fi
 
   _ui_blank
@@ -235,9 +281,16 @@ _cal_upcoming() {
   _cal_ensure_data
 
   _ui_section "UPCOMING" "next $days days"
+  _ui_blank
 
-  local up_json; up_json="$(_cal_py --action upcoming --days-ahead "$days")"
-  [[ -z "$up_json" ]] && { _ui_warn "Calendar data unavailable."; return 0; }
+  local up_json
+  up_json="$(_cal_py --action upcoming --days-ahead "$days")" || {
+    _ui_warn "Calendar data unavailable."
+    _ui_blank
+    return 0
+  }
+
+  [[ -z "$up_json" ]] && { _ui_warn "Calendar data unavailable."; _ui_blank; return 0; }
 
   # Birthdays
   local bdays; bdays="$(printf '%s' "$up_json" | python3 -c "
@@ -251,6 +304,7 @@ for b in d.get('birthdays',[]):
 " 2>/dev/null)"
   if [[ -n "$bdays" ]]; then
     _ui_subsection "Birthdays"
+    _ui_blank
     while IFS= read -r b; do
       printf '%s  %s\n' "$_UI_INDENT" "$b" >&2
     done <<< "$bdays"
@@ -272,6 +326,7 @@ for h in d.get('holidays',[]):
 " 2>/dev/null)"
   if [[ -n "$holidays" ]]; then
     _ui_subsection "Holidays"
+    _ui_blank
     while IFS= read -r h; do
       printf '%s  %s\n' "$_UI_INDENT" "$(_ui_dim "$h")" >&2
     done <<< "$holidays"
@@ -289,14 +344,17 @@ for e in d.get('events',[]):
 " 2>/dev/null)"
   if [[ -n "$evs" ]]; then
     _ui_subsection "Events"
+    _ui_blank
     while IFS= read -r ev; do
       printf '%s  %s\n' "$_UI_INDENT" "$ev" >&2
     done <<< "$evs"
     _ui_blank
   fi
 
-  [[ -z "$bdays" && -z "$holidays" && -z "$evs" ]] && \
+  [[ -z "$bdays" && -z "$holidays" && -z "$evs" ]] && {
     _ui_hint "Nothing coming up in the next $days days."
+    _ui_blank
+  }
 }
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -308,9 +366,15 @@ _cal_month() {
   local today; today="$(_db_today)"
 
   _ui_section "CALENDAR  ·  $(date '+%B %Y')"
+  _ui_blank
 
-  local month_json; month_json="$(_cal_py --action month --date "$today")"
-  [[ -z "$month_json" ]] && { _ui_warn "Calendar data unavailable."; return 0; }
+  local month_json
+  month_json="$(_cal_py --action month --date "$today")" || {
+    _ui_warn "Calendar data unavailable."
+    _ui_blank
+    return 0
+  }
+  [[ -z "$month_json" ]] && { _ui_warn "Calendar data unavailable."; _ui_blank; return 0; }
 
   printf '%s' "$month_json" | python3 - << 'PYEOF'
 import json, sys
@@ -320,19 +384,17 @@ header = f"{indent}  Mo  Tu  We  Th  Fr  Sa  Su"
 print(header)
 print(indent + "  " + "─" * 32)
 
-# Build a week grid
 days = data["days"]
-# Find what weekday the 1st is (Mon=0 … Sun=6)
 from datetime import date
 first_day = date.fromisoformat(days[0]["date"])
-start_dow = first_day.weekday()  # Mon=0
+start_dow = first_day.weekday()
 
 week = ["    "] * start_dow
 for day_data in days:
     d = day_data["day"]
     is_today = day_data["is_today"]
     has_event = bool(day_data["holidays"] or day_data["birthdays"] or day_data["events"])
-    
+
     if is_today:
         cell = f"[{d:2d}]"
     elif has_event:
@@ -340,7 +402,7 @@ for day_data in days:
     else:
         cell = f"  {d:2d}"
     week.append(cell)
-    
+
     if len(week) == 7:
         print(indent + "  " + "".join(week))
         week = []
@@ -351,11 +413,10 @@ if week:
     print(indent + "  " + "".join(week))
 
 print()
-# Legend: events this month
 print(f"{indent}  [n] = today   n* = has event")
 print()
-# List events this month
 print(f"{indent}  Events this month:")
+print()
 for day_data in days:
     items = []
     for h in day_data["holidays"]: items.append(h["name"])
@@ -385,12 +446,20 @@ _cal_birthday_route() {
 _cal_birthday_list() {
   _cal_ensure_data
   _ui_section "BIRTHDAYS"
+  _ui_blank
 
-  local data; data="$(_cal_py --action list-birthdays)"
-  [[ -z "$data" ]] && { _ui_info "No birthdays yet."; return 0; }
+  local data; data="$(_cal_py --action list-birthdays 2>/dev/null)"
+  [[ -z "$data" ]] && { _ui_info "No birthdays yet."; _ui_blank; return 0; }
 
-  local count; count="$(printf '%s' "$data" | python3 -c "import json,sys; print(len(json.load(sys.stdin)))" 2>/dev/null || echo 0)"
-  [[ "$count" -eq 0 ]] && { _ui_info "No birthdays on record."; _ui_hint "Add one: sconlx cal birthday add"; _ui_blank; return 0; }
+  local count; count="$(printf '%s' "$data" | python3 -c \
+    "import json,sys; print(len(json.load(sys.stdin)))" 2>/dev/null || echo 0)"
+  if [[ "$count" -eq 0 ]]; then
+    _ui_info "No birthdays on record."
+    _ui_blank
+    _ui_hint "Add one: isconl cal birthday add"
+    _ui_blank
+    return 0
+  fi
 
   printf '%s' "$data" | python3 - << 'PYEOF'
 import json,sys
@@ -415,35 +484,38 @@ for i, b in enumerate(entries):
     notes = b.get("notes","")
     notes_str = f"  {notes}" if notes else ""
     print(f"{indent}  [{i}]  {b['name']:22}  {raw:6}{yob_str:8}{soon}{src_str}{notes_str}")
+    print()
 PYEOF
-  printf '\n' >&2
-  _ui_hint "sconlx cal birthday add  ·  sconlx cal birthday remove <index>"
+  _ui_hint "isconl cal birthday add  ·  isconl cal birthday remove <index>"
   _ui_blank
 }
 
 _cal_birthday_add() {
   _cal_ensure_data
   _ui_section "ADD BIRTHDAY"
+  _ui_blank
 
   local name; name="$(_ui_prompt "Name")" || { _ui_info "Cancelled."; return 0; }
   [[ -z "$name" ]] && { _ui_warn "Name required."; return 0; }
 
-  local bday_date; bday_date="$(_ui_prompt "Birthday  MM-DD  (e.g. 05-27)")" || { _ui_info "Cancelled."; return 0; }
+  local bday_date; bday_date="$(_ui_prompt "Birthday  MM-DD  (e.g. 05-27)")" \
+    || { _ui_info "Cancelled."; return 0; }
   [[ -z "$bday_date" ]] && { _ui_warn "Date required."; return 0; }
-  # Validate MM-DD
   if ! [[ "$bday_date" =~ ^[0-9]{2}-[0-9]{2}$ ]]; then
     _ui_warn "Format must be MM-DD  (e.g. 05-27)"; return 0
   fi
 
   local year_born; year_born="$(_ui_prompt "Year of birth  (YYYY, optional)" "")" || true
-  local notes; notes="$(_ui_prompt "Notes  (optional)" "")" || true
+  local notes;     notes="$(_ui_prompt "Notes  (optional)" "")" || true
 
   local -a py_args=(--action add-birthday --name "$name" --bday-date "$bday_date")
   [[ -n "$year_born" ]] && py_args+=(--year-born "$year_born")
   [[ -n "$notes"     ]] && py_args+=(--notes "$notes")
 
-  local result; result="$(_cal_py "${py_args[@]}")"
+  _cal_py "${py_args[@]}" >/dev/null
+  _ui_blank
   _ui_cap "Birthday saved: $name  ($bday_date)"
+  _ui_blank
 }
 
 _cal_birthday_remove() {
@@ -453,8 +525,10 @@ _cal_birthday_remove() {
     idx="$(_ui_prompt "Enter index to remove")" || { _ui_info "Cancelled."; return 0; }
   fi
   _ui_confirm "Remove birthday at index $idx?" "n" || return 0
-  local result; result="$(_cal_py --action remove-birthday --remove-index "$idx")"
+  _cal_py --action remove-birthday --remove-index "$idx" >/dev/null
+  _ui_blank
   _ui_ok "Removed."
+  _ui_blank
 }
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -473,14 +547,18 @@ _cal_event_route() {
 _cal_event_list() {
   _cal_ensure_data
   _ui_section "CUSTOM EVENTS"
+  _ui_blank
 
-  local data; data="$(_cal_py --action list-events)"
-  local count; count="$(printf '%s' "$data" | python3 -c "import json,sys; print(len(json.load(sys.stdin)))" 2>/dev/null || echo 0)"
-  [[ "$count" -eq 0 ]] && {
+  local data; data="$(_cal_py --action list-events 2>/dev/null)"
+  local count; count="$(printf '%s' "$data" | python3 -c \
+    "import json,sys; print(len(json.load(sys.stdin)))" 2>/dev/null || echo 0)"
+  if [[ "$count" -eq 0 ]]; then
     _ui_info "No custom events."
-    _ui_hint "sconlx cal event add"
-    _ui_blank; return 0
-  }
+    _ui_blank
+    _ui_hint "isconl cal event add"
+    _ui_blank
+    return 0
+  fi
 
   printf '%s' "$data" | python3 - << 'PYEOF'
 import json,sys
@@ -490,24 +568,29 @@ for i, e in enumerate(entries):
     cat = e.get("category","")
     notes = f"  {e['notes']}" if e.get("notes") else ""
     print(f"{indent}  [{i}]  {e['date']:12}  {e['title']:30}  [{cat}]{notes}")
+    print()
 PYEOF
-  printf '\n' >&2
+  _ui_blank
 }
 
 _cal_event_add() {
   _cal_ensure_data
   _ui_section "ADD EVENT"
+  _ui_blank
   _ui_hint "Date: YYYY-MM-DD for one-time, MM-DD for annual recurring"
+  _ui_blank
 
   local title; title="$(_ui_prompt "Event title")" || { _ui_info "Cancelled."; return 0; }
   [[ -z "$title" ]] && { _ui_warn "Title required."; return 0; }
 
-  local ev_date; ev_date="$(_ui_prompt "Date  (YYYY-MM-DD or MM-DD)")" || { _ui_info "Cancelled."; return 0; }
+  local ev_date; ev_date="$(_ui_prompt "Date  (YYYY-MM-DD or MM-DD)")" \
+    || { _ui_info "Cancelled."; return 0; }
   [[ -z "$ev_date" ]] && { _ui_warn "Date required."; return 0; }
 
   local category
   category="$(_ui_menu_choice "Category" \
-    "personal" "work" "birthday" "anniversary" "memorial" "holiday" "health")" || category="personal"
+    "personal" "work" "birthday" "anniversary" "memorial" "holiday" "health")" \
+    || category="personal"
 
   local notes; notes="$(_ui_prompt "Notes  (optional)" "")" || true
 
@@ -515,7 +598,9 @@ _cal_event_add() {
   [[ -n "$notes" ]] && py_args+=(--notes "$notes")
 
   _cal_py "${py_args[@]}" >/dev/null
+  _ui_blank
   _ui_cap "Event saved: $title  ($ev_date)"
+  _ui_blank
 }
 
 _cal_event_remove() {
@@ -526,11 +611,13 @@ _cal_event_remove() {
   fi
   _ui_confirm "Remove event at index $idx?" "n" || return 0
   _cal_py --action remove-event --remove-index "$idx" >/dev/null
+  _ui_blank
   _ui_ok "Removed."
+  _ui_blank
 }
 
 # ─────────────────────────────────────────────────────────────────────────────
-# INTERACTIVE ADD — smart dispatcher
+# INTERACTIVE ADD
 # ─────────────────────────────────────────────────────────────────────────────
 
 _cal_add_interactive() {
@@ -538,7 +625,7 @@ _cal_add_interactive() {
   choice="$(_ui_menu_choice "What would you like to add?" \
     "Birthday" "Custom event")" || return 0
   case "$choice" in
-    Birthday)      _cal_birthday_add ;;
+    Birthday)       _cal_birthday_add ;;
     "Custom event") _cal_event_add ;;
   esac
 }
@@ -550,42 +637,43 @@ _cal_add_interactive() {
 _cal_edit_raw() {
   _cal_ensure_data
   local editor_cmd; editor_cmd="$(_db_editor)"
+  _ui_blank
   _ui_info "Opening calendar.json in editor..."
   eval "$editor_cmd \"$_CAL_DATA_FILE\""
-  _ui_ok "Done. Run 'sconlx cal today' to verify."
+  _ui_blank
+  _ui_ok "Done. Run 'isconl cal today' to verify."
+  _ui_blank
 }
 
 # ─────────────────────────────────────────────────────────────────────────────
 # SYNC FROM DIA PROFILES
-# Pull birthdays from DIA profiles that have last_contact populated
 # ─────────────────────────────────────────────────────────────────────────────
 
 _cal_sync_from_dia() {
   _cal_ensure_data
   _ui_section "SYNC BIRTHDAYS FROM DIA"
+  _ui_blank
 
   if [[ ! -f "$_FLAT_SPARK_DIA" ]]; then
     _ui_info "No DIA profiles found."
+    _ui_blank
     return 0
   fi
 
-  # Load existing birthday names to avoid duplicates
-  local existing_names; existing_names="$(_cal_py --action list-birthdays | \
+  local existing_names; existing_names="$(_cal_py --action list-birthdays 2>/dev/null | \
     python3 -c "import json,sys; [print(b['name'].lower()) for b in json.load(sys.stdin)]" \
     2>/dev/null || true)"
 
   local synced=0
-  # DIA TSV header: ID NAME ROLE TYPE DEPTH LAST_CONTACT TRAJECTORY CREATED_AT
   while IFS=$'\t' read -r id name role type depth last_contact traj created; do
     [[ -z "$name" || "$name" == "NAME" ]] && continue
-    # Skip if already in calendar
     if printf '%s' "$existing_names" | grep -qi "^${name}$" 2>/dev/null; then
       _ui_hint "Already in calendar: $name"
       continue
     fi
-    # Only add if we have enough info to justify — ask for birthday
     _ui_blank
     printf '%s  DIA profile: %s  (%s)\n' "$_UI_INDENT" "$(_ui_bold "$name")" "$role" >&2
+    _ui_blank
     if _ui_confirm "Add birthday for $name?" "n"; then
       local bday; bday="$(_ui_prompt "Birthday  MM-DD" "")" || continue
       [[ -z "$bday" ]] && continue
@@ -595,10 +683,12 @@ _cal_sync_from_dia() {
       args+=(--notes "from DIA")
       _cal_py "${args[@]}" >/dev/null
       _ui_ok "Added: $name"
+      _ui_blank
       (( ++synced )) || true
     fi
   done < <(tail -n +2 "$_FLAT_SPARK_DIA" 2>/dev/null)
 
   _ui_blank
   _ui_ok "Sync complete — $synced birthday(s) added."
+  _ui_blank
 }

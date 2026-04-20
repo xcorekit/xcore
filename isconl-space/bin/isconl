@@ -16,6 +16,10 @@
 # ─────────────────────────────────────────────────────────────────────────────
 # CHANGELOG
 # ─────────────────────────────────────────────────────────────────────────────
+#   v2.2.1 — Fix: equicycle.py and calendar_data.py path fallbacks for the
+#             sconl-space/ → isconl-space/ rename. Both files are located at
+#             startup with a legacy fallback + migration hint so the CLI works
+#             immediately without a manual file move.
 #   v2.2.0 — Binary renamed from sconlx to isconl. Folder renamed from
 #             sconl-space/ to isconl-space/; all internal paths updated.
 #             basename dispatch: when invoked as iscope, ispace, or ispark,
@@ -37,7 +41,7 @@ IFS=$'\n\t'
 # CONFIG
 # ─────────────────────────────────────────────────────────────────────────────
 
-_ISCONL_VERSION="2.2.0"
+_ISCONL_VERSION="2.2.1"
 
 # ── Path resolution (symlink-safe, portable) ──────────────────────────────
 _readlink_f() {
@@ -56,8 +60,46 @@ _ISCONL_BIN="$(cd "$(dirname "$(_readlink_f "${BASH_SOURCE[0]}")")" && pwd)"
 _ISCONLSPACE_DIR="$(cd "$_ISCONL_BIN/.." && pwd)"
 _XSPACE_ROOT="$(cd "$_ISCONLSPACE_DIR/.." && pwd)"
 _ISCONLSPACE_LIB_DIR="$_ISCONLSPACE_DIR/lib"
-_EQUICYCLE_PY="$_ISCONLSPACE_LIB_DIR/equicycle.py"
 _ISCONLSPACE_DATA_DIR="$_ISCONLSPACE_DIR/data"
+
+# ── Python script path resolution ────────────────────────────────────────────
+# v2.2.0 renamed sconl-space/ → isconl-space/ but equicycle.py and
+# calendar_data.py may not have been moved yet. We locate each file with a
+# legacy fallback and print a one-time migration hint so the fix is obvious.
+#
+# _py_path <canonical_path> <legacy_path> <label>
+# Prints the resolved path to stdout; prints a hint to stderr if using legacy.
+_py_path() {
+  local canonical="$1" legacy="$2" label="$3"
+  if [[ -f "$canonical" ]]; then
+    printf '%s' "$canonical"
+    return 0
+  fi
+  if [[ -f "$legacy" ]]; then
+    printf '%s  %s found at legacy path — migrate it:\n' "  !" "$label" >&2
+    printf '%s  mv "%s" \\\n     "%s"\n' "  " "$legacy" "$canonical" >&2
+    printf '%s' "$legacy"
+    return 0
+  fi
+  # Neither location — return canonical so callers get a clear "not found" path
+  printf '%s  %s not found.\n' "  x" "$label" >&2
+  printf '%s  Expected: %s\n'  "   " "$canonical" >&2
+  printf '%s' "$canonical"
+  return 1
+}
+
+_EQUICYCLE_PY="$(_py_path \
+  "$_ISCONLSPACE_LIB_DIR/equicycle.py" \
+  "$_XSPACE_ROOT/sconl-space/lib/equicycle.py" \
+  "equicycle.py")" || true
+
+_CAL_PY="$(_py_path \
+  "$_ISCONLSPACE_LIB_DIR/calendar_data.py" \
+  "$_XSPACE_ROOT/sconl-space/lib/calendar_data.py" \
+  "calendar_data.py")" || true
+
+# Export so lib modules (db.sh, calendar.sh) can read them without re-resolving
+export _EQUICYCLE_PY _CAL_PY
 
 # ─────────────────────────────────────────────────────────────────────────────
 # BASENAME DISPATCH

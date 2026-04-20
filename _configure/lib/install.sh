@@ -8,10 +8,24 @@
 #   cd xspace/_configure/lib && ./install.sh
 #   installx                            # after first install
 #   installx --no-pause                 # suppress the "Press Enter" prompt
+#   installx --skip-pull                # skip git pull, just re-wire
 #
 # ─────────────────────────────────────────────────────────────────────────────
 # CHANGELOG
 # ─────────────────────────────────────────────────────────────────────────────
+#   v1.3.0 — --skip-pull flag added (updatex calls install.sh this way so it
+#             handles its own git pull). Step 11 Flutter/Firebase simplified:
+#             installx now ONLY checks presence + version — no install
+#             instructions, no pub global checks. All upgrade logic lives in
+#             updatex --flutter. This keeps installx focused on first-time
+#             wiring only. equicycle.py self-test now prints the actual date
+#             output on success so it's easy to verify.
+#   v1.2.0 — bash-space added. STEP 1: bash-space/bin + lib dirs created.
+#             STEP 3: stale bash-space/bin cleanup added. STEP 5: bash-space
+#             validation added. STEP 12 added: prompt engine wired into shell
+#             RC via stable absolute source line; any existing Starship init
+#             removed cleanly; stale bash-space source lines cleaned before
+#             re-writing. Summary section updated with promptx entry.
 #   v1.1.0 — isconl-space rename: all ABS_SCONLSPACE* vars renamed to
 #             ABS_ISCONLSPACE*. Stale PATH cleanup now also strips old
 #             sconl-space/bin entries. STEP 5 space validation updated:
@@ -20,21 +34,8 @@
 #             updated from sconlx to isconl. Complete section commands
 #             updated: sconlx -> isconl, iscope/ispace/ispark entries added.
 #             STEP 11 added: Flutter / Dart / Firebase tooling check.
-#             Detects flutter, dart, firebase, flutterfire; checks for pub
-#             global outdated packages; advises on missing tools without
-#             auto-installing anything (tooling installs are opt-in via
-#             updatex --flutter).
 #   v1.0.0 — Moved to _configure/lib/. Windows support. Change tracking.
 #             Summary section. --no-pause flag.
-#   v0.8.0 — sconl-space expanded for full iSconl suite.
-#   v0.7.1 — Critical fix: PATH_LINE now writes \$PATH (escaped).
-#   v0.7.0 — sconl-space added. serverx/creatorx wired.
-#   v0.6.0 — Step 4 rewritten: gitspace completion via stable symlink.
-#   v0.5.0 — x-space -> _configure rename.
-#   v0.4.0 — animate-space/bin and lib. sys-space and backup-space scaffolded.
-#   v0.3.0 — CONF path fixed. animate-svg dirs added.
-#   v0.2.0 — bash-space -> x-space.
-#   v0.1.0 — Initial release.
 # ─────────────────────────────────────────────────────────────────────────────
 
 set -euo pipefail
@@ -45,8 +46,12 @@ IFS=$'\n\t'
 # ─────────────────────────────────────────────────────────────────────────────
 
 _NO_PAUSE=0
+_SKIP_PULL=0
 for _arg in "$@"; do
-    [[ "$_arg" == "--no-pause" ]] && _NO_PAUSE=1
+    case "$_arg" in
+        --no-pause)   _NO_PAUSE=1 ;;
+        --skip-pull)  _SKIP_PULL=1 ;;
+    esac
 done
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -67,11 +72,10 @@ _readlink_f() {
 
 # ─────────────────────────────────────────────────────────────────────────────
 # BOOTSTRAP
-# ─────────────────────────────────────────────────────────────────────────────
 # _LIB_DIR    = xspace/_configure/lib/
 # _X_DIR      = xspace/_configure/
 # XSPACE_ROOT = xspace/
-# NOTE: _X_DIR must NEVER be named XSPACE_DIR — reserved in xspace.conf
+# ─────────────────────────────────────────────────────────────────────────────
 
 _LIB_DIR="$(cd "$(dirname "$(_readlink_f "${BASH_SOURCE[0]}")")" && pwd)"
 _X_DIR="$(cd "$_LIB_DIR/.." && pwd)"
@@ -176,7 +180,7 @@ ABS_BK_CONFIG="$XSPACE_ROOT/$BACKUPSPACE_CONFIG_DIR"
 ABS_BK_LOGS="$XSPACE_ROOT/$BACKUPSPACE_LOG_DIR"
 ABS_BK_CONF="$XSPACE_ROOT/$BACKUPSPACE_CONF"
 
-# isconl-space (renamed from sconl-space)
+# isconl-space
 ABS_ISCONLSPACE="$XSPACE_ROOT/$ISCONLSPACE_DIR"
 ABS_ISC_BIN="$ABS_ISCONLSPACE/bin"
 ABS_ISC_LIB="$ABS_ISCONLSPACE/lib"
@@ -193,6 +197,12 @@ ABS_ISC_DATA_NOTES="$ABS_ISC_DATA/notes"
 # iSconl SQLite data (outside repo)
 ABS_ISCONL_DATA="${ISCONL_DATA_DIR:-$HOME/.local/share/isconl}"
 ABS_ISCONL_EXPORTS="$ABS_ISCONL_DATA/exports"
+
+# bash-space
+ABS_BASHSPACE="$XSPACE_ROOT/$BASHSPACE_DIR"
+ABS_BASH_BIN="$ABS_BASHSPACE/bin"
+ABS_BASH_LIB="$ABS_BASHSPACE/lib"
+ABS_BASH_PROMPT="$XSPACE_ROOT/$BASHSPACE_LIB"
 
 # gitspace completion — stable share location (move-safe)
 XSPACE_SHARE="$HOME/.local/share/xspace"
@@ -291,11 +301,12 @@ init_tsv() {
 # ─────────────────────────────────────────────────────────────────────────────
 
 echo ""
-echo "  XSpace installer v1.1.0"
+echo "  XSpace installer v1.3.0"
 echo "  root : $XSPACE_ROOT"
 echo "  bin  : $USER_BIN"
 echo "  rc   : $SHELL_RC"
 echo "  os   : $OS$(${IS_WSL} && echo ' (WSL2)' || true)"
+[[ "$_SKIP_PULL" == "1" ]] && echo "  mode : --skip-pull (git pull handled by caller)"
 echo ""
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -322,6 +333,7 @@ _mkdirs "isconl-space/data/journal"  "$ABS_ISC_DATA_JOURNAL"
 _mkdirs "isconl-space/data/notes"    "$ABS_ISC_DATA_NOTES"
 _mkdirs "iSconl shared data dir"     "$ABS_ISCONL_DATA" "$ABS_ISCONL_EXPORTS"
 _mkdirs "xspace share dir"           "$XSPACE_SHARE"
+_mkdirs "bash-space/bin + lib"       "$ABS_BASH_BIN" "$ABS_BASH_LIB"
 
 # ─────────────────────────────────────────────────────────────────────────────
 # STEP 2 — BACKUPS.CONF (first install only — never overwrite)
@@ -349,10 +361,10 @@ fi
 # ─────────────────────────────────────────────────────────────────────────────
 hr "PATH entries + symlinks"
 
-# Strip stale entries — both old sconl-space/bin and all current space bin dirs
+# Strip stale entries — both old space names and all current space bin dirs
 for _stale_space in _configure/bin animate-space/bin git-space/bin sys-space/bin \
                     backup-space/bin sconl-space/bin isconl-space/bin \
-                    server-space/bin creator-space/bin; do
+                    server-space/bin creator-space/bin bash-space/bin; do
     remove_pattern_from_rc "$SHELL_RC" "${_stale_space}:\\\$PATH" "stale ${_stale_space} entry"
 done
 
@@ -399,9 +411,9 @@ SAFE_ADD='[[ ":$PATH:" != *":$HOME/bin:"* ]] && PATH="$HOME/bin:$PATH"'
 add_line_to_rc "$SHELL_RC" "$SAFE_ADD" "xspace: ~/bin on PATH"
 
 # ─────────────────────────────────────────────────────────────────────────────
-# STEP 4 — GITSPACE COMPLETION (move-safe via stable symlink)
+# STEP 4 — GITSPACE COMPLETION + PUB CACHE PATH
 # ─────────────────────────────────────────────────────────────────────────────
-hr "gitspace completion (move-safe symlink)"
+hr "gitspace completion + Dart pub cache PATH"
 
 remove_pattern_from_rc "$SHELL_RC" \
     "gitspace-completion.sh" \
@@ -420,10 +432,11 @@ if [[ -f "$ABS_GITSPACE_COMPLETION" ]]; then
     ok "gitspace completion registered (move-safe)"
 else
     warn "gitspace-completion.sh not found at $ABS_GITSPACE_COMPLETION"
-    warn "Re-run install.sh after git-space is set up"
+    warn "Re-run installx after git-space is set up"
 fi
 
-# Pub cache bin on PATH — needed for dart pub global tools (firebase, flutterfire, etc.)
+# Dart pub cache bin on PATH (needed for flutterfire, firebase dart variant, devtools)
+# First-time PATH wiring only — updatex --flutter handles keeping tools current.
 PUB_CACHE_BIN="${DART_PUB_GLOBAL_DIR:-$HOME/.pub-cache}/bin"
 PUB_PATH_LINE="[[ \":\$PATH:\" != *\":${PUB_CACHE_BIN}:\"* ]] && PATH=\"${PUB_CACHE_BIN}:\$PATH\""
 add_line_to_rc "$SHELL_RC" "$PUB_PATH_LINE" "xspace: dart pub global bin on PATH"
@@ -438,7 +451,8 @@ for entry in \
     "git-space:$ABS_GITSPACE" \
     "sys-space:$ABS_SYSSPACE" \
     "backup-space:$ABS_BACKUPSPACE" \
-    "isconl-space:$ABS_ISCONLSPACE"
+    "isconl-space:$ABS_ISCONLSPACE" \
+    "bash-space:$ABS_BASHSPACE"
 do
     label="${entry%%:*}"; path="${entry##*:}"
     if [[ -d "$path" ]]; then
@@ -646,6 +660,11 @@ if [[ ! -f "$CALENDAR_JSON" ]]; then
     cat > "$CALENDAR_JSON" << 'JSON'
 {
   "_comment": "isconl-space/data/calendar.json — personal calendar data. Edit: isconl cal edit",
+  "_format_notes": {
+    "birthdays": "date is MM-DD. year_of_birth optional. source: manual|dia",
+    "custom_events": "date YYYY-MM-DD for one-time, MM-DD for annual recurring",
+    "categories": "birthday|anniversary|memorial|holiday|personal|work|health"
+  },
   "birthdays": [],
   "custom_events": [],
   "settings": {
@@ -665,21 +684,41 @@ else
     ok "calendar.json present"
 fi
 
-# -- Equicycle engine --
+# -- equicycle.py self-test --
+# Tests the engine that powers the cycle/date display in isconl.
+# If this fails, the dashboard will show '?' for all date fields.
+hr "equicycle.py engine"
+
 EQUICYCLE_PY="$ABS_ISCONLSPACE/lib/equicycle.py"
 if [[ -f "$EQUICYCLE_PY" ]]; then
     _chg_existing
-    ok "equicycle.py engine found"
-    if [[ -n "$PYTHON3" ]] && "$PYTHON3" "$EQUICYCLE_PY" --format fields &>/dev/null 2>&1; then
-        _chg_existing; ok "equicycle.py working"
-    else
-        warn "equicycle.py found but failed self-test — check $PYTHON3 installation"
+    ok "equicycle.py found at $ABS_ISCONLSPACE/lib/"
+    if [[ -n "$PYTHON3" ]]; then
+        _eq_out="$("$PYTHON3" "$EQUICYCLE_PY" --format short 2>&1)" || _eq_out=""
+        if [[ -n "$_eq_out" && "$_eq_out" != *"Error"* && "$_eq_out" != *"Traceback"* ]]; then
+            _chg_existing
+            ok "equicycle.py working: $_eq_out"
+        else
+            warn "equicycle.py self-test failed:"
+            warn "  output: ${_eq_out:-<empty>}"
+            warn "  Run: python3 $EQUICYCLE_PY --format short"
+        fi
     fi
 else
-    warn "equicycle.py missing at $EQUICYCLE_PY — cycle display won't work"
+    # Check legacy location from before the sconl-space → isconl-space rename
+    _legacy_eq="$XSPACE_ROOT/sconl-space/lib/equicycle.py"
+    if [[ -f "$_legacy_eq" ]]; then
+        warn "equicycle.py found at legacy path — move it to fix '?' in isconl dashboard:"
+        warn "  mv \"$_legacy_eq\" \"$EQUICYCLE_PY\""
+    else
+        warn "equicycle.py missing — isconl dashboard will show '?' for all date fields"
+        warn "  Expected: $EQUICYCLE_PY"
+    fi
 fi
 
 # -- sqlite3 --
+hr "SQLite"
+
 if command -v sqlite3 &>/dev/null; then
     _chg_existing
     ok "sqlite3 available (SQLite mode ready when Flutter apps installed)"
@@ -692,86 +731,56 @@ else
 fi
 
 # ─────────────────────────────────────────────────────────────────────────────
-# STEP 11 — FLUTTER / DART / FIREBASE TOOLING
-# Checks presence and version of each tool. Does not auto-install anything
-# here — that is the job of  updatex --flutter  so the user is always in
-# control of when SDK updates run.
+# STEP 11 — FLUTTER / DART / FIREBASE — PRESENCE CHECK ONLY
+#
+# installx wires PATH and checks whether tools are installed.
+# It does NOT install, upgrade, or manage Flutter/Firebase tooling.
+# All upgrades are the job of:  updatex --flutter
+#
+# First-time install: install Flutter manually from docs.flutter.dev,
+# then run  updatex --flutter  to install Firebase CLI and FlutterFire.
 # ─────────────────────────────────────────────────────────────────────────────
-hr "Flutter / Dart / Firebase tooling"
+hr "Flutter / Dart / Firebase  (presence check)"
 
 # Flutter
 if command -v flutter &>/dev/null; then
-    _chg_existing
     _flutter_ver="$(flutter --version 2>/dev/null | awk 'NR==1{print $2}')"
+    _chg_existing
     ok "flutter ${_flutter_ver}"
-
-    # Dart (always bundled with Flutter — check separately for standalone too)
-    if command -v dart &>/dev/null; then
-        _dart_ver="$(dart --version 2>&1 | awk '{print $4}')"
-        _chg_existing
-        ok "dart ${_dart_ver}"
-    else
-        _chg_existing
-        ok "dart  (bundled with flutter)"
-    fi
-
-    # Check whether pub-cache/bin is on PATH (needed for global tools)
-    _pub_bin="${DART_PUB_GLOBAL_DIR:-$HOME/.pub-cache}/bin"
-    if [[ ":$PATH:" != *":${_pub_bin}:"* ]]; then
-        warn "~/.pub-cache/bin is not on PATH — global Dart tools won't be found"
-        warn "This was added to $SHELL_RC above; open a new terminal or: source $SHELL_RC"
-    else
-        _chg_existing
-        ok "~/.pub-cache/bin is on PATH"
-    fi
 else
-    warn "flutter not found — install from https://docs.flutter.dev/get-started/install"
-    case "$OS" in
-        linux)   warn "Linux: snap install flutter --classic  or  download the SDK manually" ;;
-        mac)     warn "macOS: brew install --cask flutter  or  download the SDK manually" ;;
-        windows) warn "Windows: winget install Google.Flutter  or  download the SDK manually" ;;
-    esac
+    warn "flutter not installed"
+    warn "  First-time install: https://docs.flutter.dev/get-started/install"
+    warn "  After installing, run: updatex --flutter"
 fi
 
-# Firebase CLI  (npm-based — the standard full Firebase CLI)
+# Dart
+if command -v dart &>/dev/null; then
+    _dart_ver="$(dart --version 2>&1 | awk '{print $4}')"
+    _chg_existing
+    ok "dart ${_dart_ver}"
+else
+    _chg_existing
+    ok "dart  (bundled with flutter — install flutter first)"
+fi
+
+# Firebase CLI
 if command -v firebase &>/dev/null; then
     _firebase_ver="$(firebase --version 2>/dev/null || echo 'unknown')"
     _chg_existing
     ok "firebase CLI ${_firebase_ver}"
 else
-    warn "Firebase CLI not found"
-    if command -v npm &>/dev/null; then
-        warn "Install: npm install -g firebase-tools"
-        warn "Then run: updatex --flutter  to keep it current automatically"
-    else
-        warn "npm not found — install Node.js first: https://nodejs.org/"
-        warn "Then: npm install -g firebase-tools"
-    fi
+    warn "firebase CLI not installed — run: updatex --flutter"
 fi
 
-# FlutterFire CLI  (dart pub global)
+# FlutterFire CLI
 if command -v flutterfire &>/dev/null; then
     _chg_existing
     ok "flutterfire CLI found"
 else
-    warn "flutterfire CLI not found"
-    if command -v dart &>/dev/null; then
-        warn "Install: dart pub global activate flutterfire_cli"
-        warn "Then run: updatex --flutter  to keep it current automatically"
-    fi
+    warn "flutterfire CLI not installed — run: updatex --flutter"
 fi
 
-# Dart pub global outdated check (informational only — no auto-upgrade)
-if command -v dart &>/dev/null; then
-    _outdated="$(dart pub global list 2>/dev/null \
-        | grep -c '.' 2>/dev/null || echo 0)"
-    if (( _outdated > 0 )); then
-        _chg_existing
-        ok "dart pub global: ${_outdated} package(s) installed  (updatex --flutter to upgrade)"
-    fi
-fi
-
-# Node.js / npm  (needed for Firebase CLI and some Flutter tooling)
+# Node.js / npm
 if command -v node &>/dev/null; then
     _node_ver="$(node --version 2>/dev/null)"
     _npm_ver="$(npm --version 2>/dev/null)"
@@ -780,10 +789,38 @@ if command -v node &>/dev/null; then
 else
     warn "node/npm not found — required for Firebase CLI"
     case "$OS" in
-        linux)   warn "Install: $PKG_MGR nodejs npm  or  https://nodejs.org/" ;;
-        mac)     warn "Install: brew install node  or  https://nodejs.org/" ;;
-        windows) warn "Install: winget install OpenJS.NodeJS  or  https://nodejs.org/" ;;
+        linux)   warn "  Install: $PKG_MGR nodejs npm  or  https://nodejs.org/" ;;
+        mac)     warn "  Install: brew install node  or  https://nodejs.org/" ;;
+        windows) warn "  Install: winget install OpenJS.NodeJS  or  https://nodejs.org/" ;;
     esac
+fi
+
+# ─────────────────────────────────────────────────────────────────────────────
+# STEP 12 — BASH-SPACE PROMPT ENGINE
+# ─────────────────────────────────────────────────────────────────────────────
+hr "bash-space prompt engine"
+
+if [[ -f "$ABS_BASH_PROMPT" ]]; then
+    _chg_existing
+    ok "prompt.sh found at $ABS_BASH_PROMPT"
+
+    # Remove any Starship init line
+    remove_pattern_from_rc "$SHELL_RC" \
+        'eval "\$(starship init' \
+        "Starship init (replaced by bash-space)"
+
+    # Remove stale bash-space source lines before re-writing
+    remove_pattern_from_rc "$SHELL_RC" \
+        "bash-space/lib/prompt.sh" \
+        "stale bash-space source line"
+
+    PROMPT_RC_LINE="[[ -f \"${ABS_BASH_PROMPT}\" ]] && source \"${ABS_BASH_PROMPT}\""
+    add_line_to_rc "$SHELL_RC" "$PROMPT_RC_LINE" "xspace: bash-space prompt engine"
+
+    ok "prompt engine registered in $SHELL_RC"
+else
+    warn "prompt.sh missing at $ABS_BASH_PROMPT"
+    warn "Ensure bash-space/lib/prompt.sh exists and re-run installx"
 fi
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -835,37 +872,28 @@ echo "  -- Complete --------------------------------------------------"
 echo ""
 echo "  Run 'refreshx' or open a new terminal to activate."
 echo ""
-echo "  iSconl commands:"
-echo "    isconl               full iSconl dashboard"
+echo "  iSconl:"
+echo "    isconl               full dashboard"
 echo "    isconl --help        all commands"
-echo "    iscope               Scope: inbox, tasks, goals, reflection"
-echo "    ispace               Space: portfolio, projects, contacts"
-echo "    ispark               Spark: journal, ideas, learning"
+echo "    iscope               inbox, tasks, goals, reflection"
+echo "    ispace               portfolio, projects, contacts"
+echo "    ispark               journal, ideas, learning"
 echo ""
 echo "  XSpace tools:"
 echo "    animatex --help      animated text assets"
 echo "    commitx --help       git commit helper"
-echo "    backupx --help       OneDrive backup orchestrator"
-echo "    updatex --help       system + repo + Flutter updater"
-echo "    installx             re-run this installer (from anywhere)"
-echo "    refreshx             reload shell"
+echo "    backupx --help       backup orchestrator"
+echo "    updatex              update system + xspace + all tools"
+echo "    updatex --flutter    update Flutter/Firebase/Dart only"
+echo "    updatex --help       all updatex options"
 echo ""
-echo "  iSconl data (flat-file mode):"
+echo "  iSconl data:"
 echo "    $ABS_ISC_DATA"
 echo ""
-echo "  SQLite mode activates automatically when Flutter iSconl apps are"
-echo "  installed and databases appear at:"
-echo "    $ABS_ISCONL_DATA"
+echo "  Flutter tooling not installed yet?"
+echo "    1. Install Flutter:  https://docs.flutter.dev/get-started/install"
+echo "    2. Then run:         updatex --flutter"
 echo ""
-echo "  Flutter tooling:"
-echo "    updatex --flutter    upgrade Flutter, Dart globals, Firebase CLI"
-echo ""
-echo "  Moved the repo? Re-run installx — symlinks update automatically."
-echo ""
-
-# ─────────────────────────────────────────────────────────────────────────────
-# PAUSE
-# ─────────────────────────────────────────────────────────────────────────────
 
 if [[ "$_NO_PAUSE" != "1" ]]; then
     echo "  Press Enter to close..."

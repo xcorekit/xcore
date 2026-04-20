@@ -1,37 +1,34 @@
 #!/usr/bin/env bash
 # sys-space/bin/updatex
 #
-# System + XSpace repo + Flutter/Dart/Firebase updater.
+# System + XSpace repo + all managed tools updater.
 # Works on Linux (Fedora, Debian/Ubuntu, Arch), macOS, and Windows (Git Bash).
 #
 # Usage:
-#   updatex              system packages + xspace repo + flutter (default)
+#   updatex              system + xspace + flutter + node  (default: all)
 #   updatex --system     system packages only
 #   updatex --xspace     xspace repo only
 #   updatex --flutter    Flutter SDK + Dart globals + Firebase CLI only
-#   updatex --skip-pull  run install.sh only, no git pull
+#   updatex --node       Node.js global packages only (npm -g)
+#   updatex --skip-pull  re-run install.sh without git pull
 #   updatex --help
-
+#
 # ─────────────────────────────────────────────────────────────────────────────
 # CHANGELOG
 # ─────────────────────────────────────────────────────────────────────────────
-#   v0.5.0 — Added --flutter flag and Flutter update step. Included in the
-#             default run alongside system + xspace. Flutter update covers:
-#               flutter upgrade  (SDK to latest stable)
-#               flutter pub cache repair  (if cache is stale)
-#               dart pub global activate firebase_cli  (Dart Firebase CLI)
-#               npm install -g firebase-tools  (npm Firebase CLI — whichever
-#                 is detected, matching FIREBASE_CLI_SOURCE in xspace.conf)
-#               dart pub global activate flutterfire_cli
-#               dart pub global activate devtools  (Flutter DevTools)
-#             Each tool is only upgraded if it is already installed — nothing
-#             is installed for the first time here (use installx for that).
-#             FIREBASE_CLI_SOURCE in xspace.conf controls which Firebase CLI
-#             variant is upgraded (npm or dart).
-#   v0.4.0 — Fixed UPDATE_SCRIPT path (now in _configure/lib/). Full OS support:
-#             Fedora, Debian/Ubuntu, Arch, macOS (softwareupdate + brew + mas),
-#             Windows (winget / choco). Removed unicode symbols.
-#   v0.3.0 — Fixed XSPACE_ROOT resolution. Added --help/--system/--xspace flags.
+#   v0.6.0 — Fixed UPDATE_SCRIPT: now correctly resolves to install.sh
+#             (not update.sh which doesn't exist). Git pull rewritten: uses
+#             --rebase by default, handles diverging branches gracefully with
+#             a clear recovery message instead of a hard exit. --node flag
+#             added: upgrades npm global packages. Default run now covers
+#             system + xspace + flutter + node. installx is for first-time
+#             wiring only; updatex owns all ongoing tool upgrades.
+#   v0.5.0 — Added --flutter flag. Flutter update covers flutter upgrade,
+#             pub cache repair, firebase CLI, flutterfire CLI, devtools.
+#             FIREBASE_CLI_SOURCE in xspace.conf controls npm vs dart variant.
+#   v0.4.0 — Fixed UPDATE_SCRIPT path. Full OS support: Fedora, Debian/Ubuntu,
+#             Arch, macOS, Windows.
+#   v0.3.0 — Fixed XSPACE_ROOT resolution. Added --help/--system/--xspace.
 #   v0.2.0 — XSPACE_ROOT auto-detected. --skip-pull flag added.
 #   v0.1.0 — Initial release.
 # ─────────────────────────────────────────────────────────────────────────────
@@ -43,7 +40,6 @@ IFS=$'\n\t'
 # BOOTSTRAP
 # This script lives at: xspace/sys-space/bin/updatex
 # XSPACE_ROOT is:       xspace/
-# Path:                 bin/ -> sys-space/ -> xspace/  (two levels up)
 # ─────────────────────────────────────────────────────────────────────────────
 
 _readlink_f() {
@@ -110,57 +106,74 @@ hr()   { echo ""; echo -e "  ${DIM}-- $* ---------------------------------------
 DO_SYSTEM=true
 DO_XSPACE=true
 DO_FLUTTER=true
+DO_NODE=true
 SKIP_PULL=false
-
-# If the user passes any specific flag, run only that scope.
-# --flutter alone means just flutter. etc.
 _EXPLICIT=false
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --system)
-      [[ "$_EXPLICIT" == false ]] && { DO_SYSTEM=true; DO_XSPACE=false; DO_FLUTTER=false; }
+      if [[ "$_EXPLICIT" == false ]]; then
+        DO_SYSTEM=true; DO_XSPACE=false; DO_FLUTTER=false; DO_NODE=false
+      fi
       DO_SYSTEM=true; _EXPLICIT=true; shift ;;
     --xspace)
-      [[ "$_EXPLICIT" == false ]] && { DO_SYSTEM=false; DO_XSPACE=true; DO_FLUTTER=false; }
+      if [[ "$_EXPLICIT" == false ]]; then
+        DO_SYSTEM=false; DO_XSPACE=true; DO_FLUTTER=false; DO_NODE=false
+      fi
       DO_XSPACE=true; _EXPLICIT=true; shift ;;
     --flutter)
-      [[ "$_EXPLICIT" == false ]] && { DO_SYSTEM=false; DO_XSPACE=false; DO_FLUTTER=true; }
+      if [[ "$_EXPLICIT" == false ]]; then
+        DO_SYSTEM=false; DO_XSPACE=false; DO_FLUTTER=true; DO_NODE=false
+      fi
       DO_FLUTTER=true; _EXPLICIT=true; shift ;;
+    --node)
+      if [[ "$_EXPLICIT" == false ]]; then
+        DO_SYSTEM=false; DO_XSPACE=false; DO_FLUTTER=false; DO_NODE=true
+      fi
+      DO_NODE=true; _EXPLICIT=true; shift ;;
     --skip-pull)  SKIP_PULL=true; shift ;;
     --help|-h)
       cat <<EOF
 
-  ${BOLD}updatex${R} v0.5.0 — system + XSpace + Flutter updater
+  ${BOLD}updatex${R} v0.6.0 — system + XSpace + all tools updater
 
   ${BOLD}USAGE${R}
-    updatex              system + xspace + flutter  (all three, default)
+    updatex              system + xspace + flutter + node  (all, default)
     updatex --system     system packages only
-    updatex --xspace     xspace repo only
-    updatex --flutter    Flutter/Dart/Firebase only
-    updatex --skip-pull  re-run install.sh without git pull
+    updatex --xspace     xspace repo only (git pull + installx)
+    updatex --flutter    Flutter SDK + Dart globals + Firebase CLI only
+    updatex --node       npm global packages only
+    updatex --skip-pull  re-run install.sh, skip git pull
     updatex --help
+
+  ${BOLD}WHAT updatex OWNS${R}
+    All ongoing tool upgrades live here.
+    installx = first-time wiring only (PATH, symlinks, data dirs).
+    updatex  = keeping everything current after that.
 
   ${BOLD}SYSTEM  (OS-aware)${R}
     Linux (Fedora)  : dnf upgrade -> flatpak update -> dnf autoremove
     Linux (apt)     : apt update + upgrade + autoremove
     Linux (Arch)    : pacman -Syu
     macOS           : softwareupdate -ia -> brew update + upgrade + autoremove
-                      mas upgrade (if mas installed — Mac App Store)
     Windows         : winget upgrade --all  or  choco upgrade all
 
   ${BOLD}XSPACE${R}
-    git pull --ff-only origin main  ->  _configure/lib/install.sh
+    git pull --rebase origin main  ->  installx --skip-pull
 
-  ${BOLD}FLUTTER${R}  (only upgrades tools already installed — won't install new ones)
+  ${BOLD}FLUTTER${R}  (only upgrades tools already installed)
     flutter upgrade              Flutter SDK to latest stable
     flutter pub cache repair     repair pub cache if stale
-    dart pub global activate     firebase_cli  (if dart variant in use)
-    npm install -g firebase-tools              (if npm variant in use)
     dart pub global activate     flutterfire_cli
     dart pub global activate     devtools
+    npm install -g firebase-tools    (if npm variant — default)
+    dart pub global activate firebase_cli  (if dart variant)
 
-  ${BOLD}FIREBASE_CLI_SOURCE${R} in xspace.conf controls which Firebase CLI is upgraded.
+  ${BOLD}NODE${R}
+    npm update -g                update all global npm packages
+
+  ${BOLD}FIREBASE_CLI_SOURCE${R} in xspace.conf:
     npm   (default)  — npm install -g firebase-tools
     dart             — dart pub global activate firebase_cli
 
@@ -172,28 +185,30 @@ EOF
 done
 
 # ─────────────────────────────────────────────────────────────────────────────
-# VALIDATE — update.sh path
-# Supports both _configure/lib/update.sh (new) and _configure/update.sh (old)
+# RESOLVE install.sh path
+# updatex calls install.sh --skip-pull --no-pause to re-wire after a git pull.
+# Supports both _configure/lib/install.sh (current) and _configure/install.sh
+# (legacy location).
 # ─────────────────────────────────────────────────────────────────────────────
 
 _CONFIGURE_ROOT="$XSPACE_ROOT/${CONFIGURE_DIR:-_configure}"
-UPDATE_SCRIPT=""
+INSTALL_SCRIPT=""
 for _candidate in \
-    "$_CONFIGURE_ROOT/lib/update.sh" \
-    "$_CONFIGURE_ROOT/update.sh"; do
+    "$_CONFIGURE_ROOT/lib/install.sh" \
+    "$_CONFIGURE_ROOT/install.sh"; do
   if [[ -f "$_candidate" ]]; then
-    UPDATE_SCRIPT="$_candidate"
+    INSTALL_SCRIPT="$_candidate"
     break
   fi
 done
 
-if [[ "$DO_XSPACE" == true && -z "$UPDATE_SCRIPT" ]]; then
-  err "Orchestrator update script not found."
+if [[ "$DO_XSPACE" == true && -z "$INSTALL_SCRIPT" ]]; then
+  err "install.sh not found — cannot re-wire after git pull."
   echo -e "  ${GRY}Searched:${R}"
-  echo -e "  ${GRY}  ${CYN}${_CONFIGURE_ROOT}/lib/update.sh${R}"
-  echo -e "  ${GRY}  ${CYN}${_CONFIGURE_ROOT}/update.sh${R}"
+  echo -e "    ${CYN}${_CONFIGURE_ROOT}/lib/install.sh${R}"
+  echo -e "    ${CYN}${_CONFIGURE_ROOT}/install.sh${R}"
   echo ""
-  echo -e "  ${GRY}CONFIGURE_DIR : ${CYN}${CONFIGURE_DIR:-_configure}${R}  ${GRY}(from xspace.conf)${R}"
+  echo -e "  ${GRY}CONFIGURE_DIR : ${CYN}${CONFIGURE_DIR:-_configure}${R}  (from xspace.conf)"
   echo -e "  ${GRY}XSPACE_ROOT   : ${CYN}${XSPACE_ROOT}${R}"
   exit 1
 fi
@@ -202,17 +217,18 @@ fi
 # HEADER
 # ─────────────────────────────────────────────────────────────────────────────
 
+_scope_parts=()
+[[ "$DO_SYSTEM"  == true ]] && _scope_parts+=("system")
+[[ "$DO_XSPACE"  == true ]] && _scope_parts+=("xspace")
+[[ "$DO_FLUTTER" == true ]] && _scope_parts+=("flutter")
+[[ "$DO_NODE"    == true ]] && _scope_parts+=("node")
+_scope_str="$(IFS='+'; printf '%s' "${_scope_parts[*]}")"
+
 echo ""
-echo -e "  ${BOLD}${WHT}updatex${R}${GRY} v0.5.0 — system + XSpace + Flutter updater${R}"
+echo -e "  ${BOLD}${WHT}updatex${R}${GRY} v0.6.0 — system + XSpace + all tools updater${R}"
 echo -e "  ${GRY}root : ${CYN}${XSPACE_ROOT}${R}"
 echo -e "  ${GRY}os   : ${CYN}${OS}${R}"
-echo -e "  ${GRY}scope: ${CYN}$( \
-  parts=(); \
-  [[ "$DO_SYSTEM" == true ]]  && parts+=("system"); \
-  [[ "$DO_XSPACE" == true ]]  && parts+=("xspace"); \
-  [[ "$DO_FLUTTER" == true ]] && parts+=("flutter"); \
-  IFS='+'; printf '%s' "${parts[*]}"
-)${R}"
+echo -e "  ${GRY}scope: ${CYN}${_scope_str}${R}"
 
 # ─────────────────────────────────────────────────────────────────────────────
 # SYSTEM UPDATE
@@ -293,7 +309,6 @@ if [[ "$DO_SYSTEM" == true ]]; then
         ok "choco upgrade complete"
       else
         warn "No supported package manager found (winget / choco)"
-        warn "Install winget: https://aka.ms/getwinget"
       fi
       ;;
 
@@ -302,7 +317,7 @@ if [[ "$DO_SYSTEM" == true ]]; then
 fi
 
 # ─────────────────────────────────────────────────────────────────────────────
-# XSPACE UPDATE
+# XSPACE REPO UPDATE
 # ─────────────────────────────────────────────────────────────────────────────
 
 if [[ "$DO_XSPACE" == true ]]; then
@@ -311,13 +326,36 @@ if [[ "$DO_XSPACE" == true ]]; then
   echo ""
 
   if [[ "$SKIP_PULL" == false ]]; then
-    info "git pull --ff-only origin main..."
     cd "$XSPACE_ROOT"
-    if git pull --ff-only origin main; then
+
+    # Check current branch
+    _current_branch="$(git rev-parse --abbrev-ref HEAD 2>/dev/null || echo 'unknown')"
+    info "git pull --rebase origin ${_current_branch}..."
+
+    if git pull --rebase origin "$_current_branch"; then
       ok "Repository up to date"
     else
-      warn "git pull failed — check remote and branch name."
-      warn "Re-run with --skip-pull to just re-run install.sh."
+      # Rebase failed — give clear recovery options instead of just exiting
+      echo ""
+      warn "git pull --rebase failed. Your local commits diverged from the remote."
+      echo ""
+      echo -e "  ${GRY}Recovery options:${R}"
+      echo ""
+      echo -e "  ${CYN}Option A — Keep local changes, replay on top of remote (recommended):${R}"
+      echo -e "    git rebase --abort          # undo the failed rebase"
+      echo -e "    git fetch origin"
+      echo -e "    git rebase origin/${_current_branch}"
+      echo ""
+      echo -e "  ${CYN}Option B — Merge (creates a merge commit):${R}"
+      echo -e "    git rebase --abort"
+      echo -e "    git merge --no-ff origin/${_current_branch}"
+      echo ""
+      echo -e "  ${CYN}Option C — Reset to remote (discards your local commits):${R}"
+      echo -e "    git rebase --abort"
+      echo -e "    git reset --hard origin/${_current_branch}"
+      echo ""
+      echo -e "  ${GRY}After resolving, re-run: ${CYN}updatex --xspace --skip-pull${R}"
+      echo ""
       exit 1
     fi
     echo ""
@@ -325,52 +363,46 @@ if [[ "$DO_XSPACE" == true ]]; then
     info "Skipping git pull  (--skip-pull)"
   fi
 
-  info "Re-running install.sh..."
+  info "Re-running installx (--skip-pull --no-pause)..."
   echo ""
-  # --no-pause: install.sh pause is skipped; updatex pauses once at the end
-  "$UPDATE_SCRIPT" --skip-pull --no-pause
+  bash "$INSTALL_SCRIPT" --skip-pull --no-pause
 fi
 
 # ─────────────────────────────────────────────────────────────────────────────
 # FLUTTER / DART / FIREBASE UPDATE
-# Only upgrades tools that are already installed. Never installs new tools.
-# Use installx (or manual install) to add new tools for the first time.
+# Only upgrades tools already installed. Never installs new tools for the
+# first time — use installx + manual Flutter install for that.
 # ─────────────────────────────────────────────────────────────────────────────
 
 if [[ "$DO_FLUTTER" == true ]]; then
   hr "Flutter / Dart / Firebase tooling"
 
-  # ── Flutter SDK ──────────────────────────────────────────────────────────
+  # Flutter SDK
   if command -v flutter &>/dev/null; then
     info "flutter upgrade  (SDK to latest stable)..."
     flutter upgrade --force
-    ok "flutter upgraded: $(flutter --version 2>/dev/null | awk 'NR==1{print $2}')"
+    _fv="$(flutter --version 2>/dev/null | awk 'NR==1{print $2}')"
+    ok "flutter upgraded: ${_fv}"
 
-    # Repair pub cache if needed (common after SDK upgrade)
     info "flutter pub cache repair..."
     flutter pub cache repair
     ok "pub cache repair complete"
   else
     warn "flutter not found — skipping SDK upgrade"
-    warn "Install: https://docs.flutter.dev/get-started/install"
+    warn "  Install: https://docs.flutter.dev/get-started/install"
+    warn "  Then re-run: updatex --flutter"
   fi
 
-  # ── Firebase CLI ──────────────────────────────────────────────────────────
-  # Upgrade whichever variant is configured in xspace.conf (npm default).
-  # If both are installed, upgrade both.
+  # Firebase CLI — upgrade whichever variant is configured (npm default)
   _firebase_source="${FIREBASE_CLI_SOURCE:-npm}"
   _upgraded_firebase=false
 
-  if [[ "$_firebase_source" == "npm" ]] || command -v firebase &>/dev/null; then
-    if command -v npm &>/dev/null && command -v firebase &>/dev/null; then
-      info "npm install -g firebase-tools  (upgrading Firebase CLI)..."
+  if command -v npm &>/dev/null; then
+    if [[ "$_firebase_source" == "npm" ]] || command -v firebase &>/dev/null; then
+      info "npm install -g firebase-tools..."
       npm install -g firebase-tools
-      ok "firebase-tools upgraded: $(firebase --version 2>/dev/null || echo 'check manually')"
-      _upgraded_firebase=true
-    elif command -v npm &>/dev/null && [[ "$_firebase_source" == "npm" ]]; then
-      info "npm install -g firebase-tools  (installing Firebase CLI)..."
-      npm install -g firebase-tools
-      ok "firebase-tools installed"
+      _fv="$(firebase --version 2>/dev/null || echo 'check manually')"
+      ok "firebase-tools upgraded: ${_fv}"
       _upgraded_firebase=true
     fi
   fi
@@ -383,46 +415,69 @@ if [[ "$DO_FLUTTER" == true ]]; then
   fi
 
   if [[ "$_upgraded_firebase" == false ]]; then
-    warn "Firebase CLI not upgraded — neither npm+firebase nor dart found"
-    warn "Install: npm install -g firebase-tools  (requires Node.js)"
+    warn "Firebase CLI not upgraded"
+    if ! command -v npm &>/dev/null; then
+      warn "  npm not found — install Node.js: https://nodejs.org/"
+    fi
+    warn "  Then: npm install -g firebase-tools"
   fi
 
-  # ── FlutterFire CLI ───────────────────────────────────────────────────────
+  # FlutterFire CLI
   if command -v dart &>/dev/null; then
     info "dart pub global activate flutterfire_cli..."
     dart pub global activate flutterfire_cli
-    if command -v flutterfire &>/dev/null; then
-      ok "flutterfire_cli upgraded"
-    else
-      ok "flutterfire_cli installed — open a new terminal for it to appear on PATH"
-    fi
+    ok "flutterfire_cli upgraded"
   else
     warn "dart not found — skipping flutterfire_cli upgrade"
   fi
 
-  # ── Dart DevTools ─────────────────────────────────────────────────────────
+  # Dart DevTools
   if command -v dart &>/dev/null; then
     info "dart pub global activate devtools..."
     dart pub global activate devtools
     ok "devtools upgraded"
   fi
 
-  # ── Dart pub global summary ───────────────────────────────────────────────
+  # Dart pub global packages summary
   if command -v dart &>/dev/null; then
     echo ""
     echo -e "  ${GRY}Dart pub global packages:${R}"
     dart pub global list 2>/dev/null | while IFS= read -r line; do
-      echo -e "     ${GRY}${line}${R}"
+      echo -e "    ${GRY}${line}${R}"
     done
   fi
 
-  # ── PATH reminder ─────────────────────────────────────────────────────────
+  # PATH reminder
   _pub_bin="${DART_PUB_GLOBAL_DIR:-$HOME/.pub-cache}/bin"
   if [[ ":$PATH:" != *":${_pub_bin}:"* ]]; then
     echo ""
-    warn "~/.pub-cache/bin is not on PATH in this session"
-    warn "Open a new terminal or run:  source ~/.bashrc"
-    warn "installx adds this automatically on fresh installs"
+    warn "~/.pub-cache/bin not on PATH in this session"
+    warn "Open a new terminal or: source ~/.bashrc"
+  fi
+fi
+
+# ─────────────────────────────────────────────────────────────────────────────
+# NODE GLOBAL PACKAGES UPDATE
+# ─────────────────────────────────────────────────────────────────────────────
+
+if [[ "$DO_NODE" == true ]]; then
+  hr "Node.js global packages"
+
+  if command -v npm &>/dev/null; then
+    _node_ver="$(node --version 2>/dev/null)"
+    _npm_ver="$(npm --version 2>/dev/null)"
+    info "npm update -g  (node ${_node_ver} / npm ${_npm_ver})..."
+    npm update -g 2>/dev/null || npm update -g --force 2>/dev/null || true
+    ok "npm global packages updated"
+
+    echo ""
+    echo -e "  ${GRY}Global npm packages:${R}"
+    npm list -g --depth=0 2>/dev/null | tail -n +2 | while IFS= read -r line; do
+      echo -e "    ${GRY}${line}${R}"
+    done
+  else
+    warn "npm not found — skipping node global update"
+    warn "  Install Node.js: https://nodejs.org/"
   fi
 fi
 
@@ -433,7 +488,7 @@ fi
 echo ""
 hr "Done"
 echo ""
-ok "All updates complete."
+ok "All updates complete.  Scope: ${_scope_str}"
 echo ""
 echo -e "  ${GRY}Open a new terminal or run ${CYN}refreshx${R}${GRY} to activate any PATH changes.${R}"
 echo ""
