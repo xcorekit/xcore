@@ -1,58 +1,116 @@
 #!/usr/bin/env bash
-# xcore/install.sh — xcorekit master installer
+# xcorekit/xcore/install.sh
 # Installs all xcorekit public tools in one command.
 # Each tool is also individually installable via its own install.sh.
 # ─────────────────────────────────────────────────────────────────────────────
+# Usage:
+#   ./install.sh           — install all xcorekit public tools
+#   ./install.sh --list    — show what would be installed
+# ─────────────────────────────────────────────────────────────────────────────
 # CHANGELOG (newest first)
 # ─────────────────────────────────────────────────────────────────────────────
-#   2026-05-03  Initial master installer
+#   2026-05-05  v1.0.0 — initial master installer for xcorekit
 # ─────────────────────────────────────────────────────────────────────────────
 set -euo pipefail
 
-_XCORE_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-_PARENT="$(cd "$_XCORE_ROOT/.." && pwd)"   # Systems/XCore/
-_GITHUB_ORG="git@github.com:xcorekit"
+_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+_PARENT="$(cd "$_ROOT/.." && pwd)"    # XCore/
+_ORG="git@github.com:xcorekit"
+_USER_BIN="${HOME}/bin"
 _RC="${HOME}/.bashrc"
+_MODE="${1:-}"
 
-printf '\n  xcorekit install\n  ────────────────\n\n'
+_ok()  { printf '  \033[32m✓\033[0m  %s\n' "$*"; }
+_add() { printf '  \033[33m+\033[0m  %s\n' "$*"; }
+_run() { printf '  \033[2m~\033[0m  %s\n' "$*"; }
+_err() { printf '  \033[31m✗\033[0m  %s\n' "$*" >&2; }
+_sec() { printf '\n  \033[1m%s\033[0m\n  %s\n' "$1" "$(printf '─%.0s' $(seq 1 ${#1}))"; }
 
-# ── Helper: clone or pull a public tool ──────────────────────────────────────
-_install_tool() {
-    local name="$1"
-    local dir="$_PARENT/$name"
-    printf '  [%s]\n' "$name"
+# Public tools — cloned to sibling dirs of xcore
+declare -a PUBLIC_TOOLS=(
+    "git-core"
+    "bash-core"
+    "animate-core"
+    "calendar-core"
+    "finance-core"
+)
+
+# Private tools already in this repo (xcore/backup-space, xcore/sys-space)
+declare -a PRIVATE_BINS=(
+    "backup-space/bin"
+    "sys-space/bin"
+)
+
+if [[ "$_MODE" == "--list" ]]; then
+    printf '\n  xcorekit tools that will be installed:\n\n'
+    for t in "${PUBLIC_TOOLS[@]}"; do
+        printf '    %s  (public) → %s/%s\n' "$t" "$_PARENT" "$t"
+    done
+    for b in "${PRIVATE_BINS[@]}"; do
+        printf '    %s  (private, already in repo)\n' "$b"
+    done
+    printf '\n'
+    exit 0
+fi
+
+_sec "xcorekit install"
+mkdir -p "$_USER_BIN"
+
+# ── Public tools ──────────────────────────────────────────────────────────────
+_sec "Public tools"
+for repo in "${PUBLIC_TOOLS[@]}"; do
+    dir="$_PARENT/$repo"
+    printf '\n  [%s]\n' "$repo"
     if [[ -d "$dir/.git" ]]; then
-        printf '    pulling latest...\n'
-        git -C "$dir" pull --rebase origin main 2>/dev/null || \
-            printf '    ! pull failed — continuing\n'
+        git -C "$dir" pull --rebase origin main --quiet 2>/dev/null \
+            && _ok "Updated" || _ok "Up to date"
     else
-        printf '    cloning...\n'
-        git clone "$_GITHUB_ORG/$name.git" "$dir" --quiet
+        git clone --quiet "$_ORG/$repo.git" "$dir" \
+            && _ok "Cloned" || { _err "Failed to clone $repo"; continue; }
     fi
     if [[ -f "$dir/install.sh" ]]; then
         bash "$dir/install.sh"
+    else
+        # Fallback: wire PATH + link bins directly
+        bin_dir="$dir/cli/bin"
+        if [[ -d "$bin_dir" ]]; then
+            chmod +x "$bin_dir"/* 2>/dev/null || true
+            if ! grep -qF "$bin_dir" "$_RC" 2>/dev/null; then
+                printf '\n# xcorekit/%s\nexport PATH="%s:$PATH"\n' "$repo" "$bin_dir" >> "$_RC"
+                _add "PATH: $bin_dir"
+            fi
+            for f in "$bin_dir"/*; do
+                [[ -f "$f" ]] || continue
+                ln -sf "$f" "$_USER_BIN/$(basename "$f")"
+                _run "Linked: $(basename "$f")"
+            done
+        fi
     fi
-    printf '\n'
-}
+done
 
-# ── Install all public tools ─────────────────────────────────────────────────
-_install_tool "git-core"
-_install_tool "bash-core"
-_install_tool "animate-core"
-_install_tool "calendar-core"
-_install_tool "finance-core"
+# ── Private tools (backup-space, sys-space) ───────────────────────────────────
+_sec "Private tools"
+for rel_bin in "${PRIVATE_BINS[@]}"; do
+    bin_dir="$_ROOT/$rel_bin"
+    if [[ -d "$bin_dir" ]]; then
+        label="xcore/${rel_bin%/bin}"
+        if ! grep -qF "$bin_dir" "$_RC" 2>/dev/null; then
+            printf '\n# %s\nexport PATH="%s:$PATH"\n' "$label" "$bin_dir" >> "$_RC"
+            _add "PATH: $label"
+        else
+            _ok "Already in PATH: $label"
+        fi
+        chmod +x "$bin_dir"/* 2>/dev/null || true
+        for f in "$bin_dir"/*; do
+            [[ -f "$f" ]] || continue
+            ln -sf "$f" "$_USER_BIN/$(basename "$f")"
+            _run "Linked: $(basename "$f")"
+        done
+    else
+        printf '  (no %s — skipping)\n' "$rel_bin"
+    fi
+done
 
-# ── Private tools (backup-space, sys-space) already in this repo ─────────────
-if [[ -f "$_XCORE_ROOT/backup-space/bin/backupx" ]]; then
-    _BIN="$_XCORE_ROOT/backup-space/bin"
-    [[ ":$PATH:" != *":$_BIN:"* ]] && \
-        printf '\n# xcore backup-space\nexport PATH="$PATH:%s"\n' "$_BIN" >> "$_RC"
-fi
-if [[ -f "$_XCORE_ROOT/sys-space/bin/updatex" ]]; then
-    _BIN="$_XCORE_ROOT/sys-space/bin"
-    [[ ":$PATH:" != *":$_BIN:"* ]] && \
-        printf '\n# xcore sys-space\nexport PATH="$PATH:%s"\n' "$_BIN" >> "$_RC"
-fi
-
-printf '  ✓  All xcorekit tools installed.\n'
+_sec "Done"
+printf '  All xcorekit tools installed.\n'
 printf '  Run: source ~/.bashrc\n\n'
