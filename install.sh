@@ -1,15 +1,12 @@
 #!/usr/bin/env bash
-# xcorekit/xcore/install.sh
-# Installs all xcorekit public tools in one command.
+# xcore/install.sh — xcorekit barrel installer
+# Installs every xcorekit public tool in one command.
 # Each tool is also individually installable via its own install.sh.
 # ─────────────────────────────────────────────────────────────────────────────
 # Usage:
-#   ./install.sh           — install all xcorekit public tools
-#   ./install.sh --list    — show what would be installed
-# ─────────────────────────────────────────────────────────────────────────────
-# CHANGELOG (newest first)
-# ─────────────────────────────────────────────────────────────────────────────
-#   2026-05-05  v1.0.0 — initial master installer for xcorekit
+#   ./install.sh           — install all xcorekit tools
+#   ./install.sh --list    — show what will be installed
+#   ./install.sh --update  — pull all repos + re-link
 # ─────────────────────────────────────────────────────────────────────────────
 set -euo pipefail
 
@@ -26,58 +23,62 @@ _run() { printf '  \033[2m~\033[0m  %s\n' "$*"; }
 _err() { printf '  \033[31m✗\033[0m  %s\n' "$*" >&2; }
 _sec() { printf '\n  \033[1m%s\033[0m\n  %s\n' "$1" "$(printf '─%.0s' $(seq 1 ${#1}))"; }
 
-# Public tools — cloned to sibling dirs of xcore
-declare -a PUBLIC_TOOLS=(
-    "git-core"
-    "bash-core"
-    "animate-core"
-    "calendar-core"
-    "finance-core"
-)
-
-# Private tools already in this repo (xcore/backup-space, xcore/sys-space)
-declare -a PRIVATE_BINS=(
-    "backup-space/bin"
-    "sys-space/bin"
-)
+# Public tools from xcore.conf
+source "$_ROOT/xcore.conf"
 
 if [[ "$_MODE" == "--list" ]]; then
-    printf '\n  xcorekit tools that will be installed:\n\n'
-    for t in "${PUBLIC_TOOLS[@]}"; do
-        printf '    %s  (public) → %s/%s\n' "$t" "$_PARENT" "$t"
-    done
-    for b in "${PRIVATE_BINS[@]}"; do
-        printf '    %s  (private, already in repo)\n' "$b"
+    printf '\n  xcorekit tools:\n\n'
+    for t in "${XCOREKIT_PUBLIC[@]}"; do
+        local_dir="$_PARENT/$t"
+        status="not cloned"
+        [[ -d "$local_dir/.git" ]] && status="installed"
+        printf '    %-20s → %s  (%s)\n' "$t" "$local_dir" "$status"
     done
     printf '\n'
     exit 0
 fi
 
-_sec "xcorekit install"
+if [[ "$_MODE" == "--update" ]]; then
+    _sec "Updating all xcorekit tools"
+    for repo in "${XCOREKIT_PUBLIC[@]}"; do
+        dir="$_PARENT/$repo"
+        [[ -d "$dir/.git" ]] || continue
+        printf '  [%s] ' "$repo"
+        git -C "$dir" pull --rebase origin main --quiet 2>/dev/null \
+            && _ok "updated" || _ok "up to date"
+    done
+    printf '\n  ✓  All tools updated.\n\n'
+    exit 0
+fi
+
+_sec "xcorekit barrel install"
 mkdir -p "$_USER_BIN"
 
-# ── Public tools ──────────────────────────────────────────────────────────────
-_sec "Public tools"
-for repo in "${PUBLIC_TOOLS[@]}"; do
+for repo in "${XCOREKIT_PUBLIC[@]}"; do
     dir="$_PARENT/$repo"
     printf '\n  [%s]\n' "$repo"
+
+    # Clone if not present, pull if already there
     if [[ -d "$dir/.git" ]]; then
         git -C "$dir" pull --rebase origin main --quiet 2>/dev/null \
             && _ok "Updated" || _ok "Up to date"
     else
         git clone --quiet "$_ORG/$repo.git" "$dir" \
-            && _ok "Cloned" || { _err "Failed to clone $repo"; continue; }
+            && _ok "Cloned" \
+            || { _err "Failed to clone $repo — skipping"; continue; }
     fi
+
+    # Run the tool's own install.sh
     if [[ -f "$dir/install.sh" ]]; then
         bash "$dir/install.sh"
     else
-        # Fallback: wire PATH + link bins directly
+        # Fallback: wire PATH + link directly
         bin_dir="$dir/cli/bin"
         if [[ -d "$bin_dir" ]]; then
             chmod +x "$bin_dir"/* 2>/dev/null || true
             if ! grep -qF "$bin_dir" "$_RC" 2>/dev/null; then
                 printf '\n# xcorekit/%s\nexport PATH="%s:$PATH"\n' "$repo" "$bin_dir" >> "$_RC"
-                _add "PATH: $bin_dir"
+                _add "PATH wired"
             fi
             for f in "$bin_dir"/*; do
                 [[ -f "$f" ]] || continue
@@ -85,29 +86,6 @@ for repo in "${PUBLIC_TOOLS[@]}"; do
                 _run "Linked: $(basename "$f")"
             done
         fi
-    fi
-done
-
-# ── Private tools (backup-space, sys-space) ───────────────────────────────────
-_sec "Private tools"
-for rel_bin in "${PRIVATE_BINS[@]}"; do
-    bin_dir="$_ROOT/$rel_bin"
-    if [[ -d "$bin_dir" ]]; then
-        label="xcore/${rel_bin%/bin}"
-        if ! grep -qF "$bin_dir" "$_RC" 2>/dev/null; then
-            printf '\n# %s\nexport PATH="%s:$PATH"\n' "$label" "$bin_dir" >> "$_RC"
-            _add "PATH: $label"
-        else
-            _ok "Already in PATH: $label"
-        fi
-        chmod +x "$bin_dir"/* 2>/dev/null || true
-        for f in "$bin_dir"/*; do
-            [[ -f "$f" ]] || continue
-            ln -sf "$f" "$_USER_BIN/$(basename "$f")"
-            _run "Linked: $(basename "$f")"
-        done
-    else
-        printf '  (no %s — skipping)\n' "$rel_bin"
     fi
 done
 
